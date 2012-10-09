@@ -12,10 +12,10 @@ var app = require('http').createServer(RequestHandler)
 	, mime = require('mime')
 	, formidable = require('formidable')
 	, fs = require('fs')
+	, util = require('util')
 
 fs.mkdir(fileDir);
 app.listen(port);
-process.setMaxListeners(0);
 
 function RequestHandler(req, res) {
 	try {
@@ -25,17 +25,24 @@ function RequestHandler(req, res) {
 				var form = new formidable.IncomingForm();
 				form.uploadDir = fileDir;
 				form.parse(req);
-				form.on('fileBegin', function(name, file){
+				form.on('fileBegin', function(name, file) {
+					Log("Receiving " + file.name + " from " + req.socket.remoteAddress + ".");
 					file.path = form.uploadDir + "/" + file.name;
-					Log("Receiving " + file.path + " from " + req.socket.remoteAddress + ".");
+					io.sockets.emit('newfile', file.name);
 				});
-				form.on('end', function(name, file){
+				form.on('end', function(name, file) {
 					RedirectToRoot(res,req);
 				});
-				form.on('progress', function(bytesReceived, bytesExpected){
+				form.on('progress', function(bytesReceived, bytesExpected) {
 					percent = (bytesReceived / bytesExpected * 100) | 0;
 					io.sockets.emit('progress', percent);
 				});
+				form.on('error', function(err) {
+					errOutput = util.inspect(err);
+					Log('Error: ' + errOutput)
+					res.writeHead(200, {'content-type': 'text/plain'});
+					res.end('error:\n\n'+ errOutput);
+				})
 			}
 		} else {
 			if (req.url.match(/css\.css$/g)) {
@@ -45,9 +52,9 @@ function RequestHandler(req, res) {
 				num = req.url.match(/\d+/g)
 				for (i = 0; i < filenames.length; i++) {
 					if (i == num) {
-						var path = fileDir + filenames[i]
-						fs.unlink(path);
-						Log("Deleting " + path);
+						Log("Deleting " + filenames[i]);
+						fs.unlinkSync(fileDir + filenames[i]);
+						break;
 					}
 				}
 				RedirectToRoot(res,req);
@@ -90,40 +97,49 @@ function RedirectToRoot(res,req) {
 }
 //-----------------------------------------------------------------------------
 function HTML(res,req) {
+
+	function Write(data) {
+		res.write(data + '\r\n')
+	}
+
+
 	res.writeHead(200, {'content-type': 'text/html'});
-	res.write('<!DOCTYPE html><html lang="en">');
-	res.write('<head>');
-		res.write('<title>Droppy</title><link rel="stylesheet" href="css.css">');
-		res.write('<meta http-equiv="content-type" content="text/html; charset=UTF-8"/>');
-		res.write('<link rel="icon" type="image/png" href="data:image/png;base64,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">');
-			res.write('<script src="/socket.io/socket.io.js"></script>');
-			res.write('<script>');
-			res.write(' var socket = io.connect("http://localhost/");');
-			res.write('	socket.on("progress" , function(percent){');
-			res.write(' document.getElementById("progressBar").setAttribute("value",percent);')
-			res.write(' });');
-			res.write('</script>');
-	res.write('</head>');
-	res.write('<body>');
-		res.write('<div id="container"><div id="header">');
-		res.write('<form action="/upload" enctype="multipart/form-data" method="post">');
-		res.write('<span class="uploadbutton"><input type="file" name="file" id="file" onchange="this.form.submit()" multiple="multiple" />');
-		res.write('<span class="button">Select files to upload</span></span>');
-		res.write('</form></div><progress id="progressBar" max="100" value="0"><strong>Progress: 0% done.</strong></progress><div id="content">');
+	Write('<!DOCTYPE html><html lang="en">');
+	Write('<head>');
+	Write('<title>Droppy</title><link rel="stylesheet" href="css.css">');
+	Write('<meta http-equiv="content-type" content="text/html; charset=UTF-8"/>');
+	Write('<link rel="icon" type="image/png" href="data:image/png;base64,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">');
+	Write('<link href="http://fonts.googleapis.com/css?family=Open+Sans" rel="stylesheet" type="text/css">')
+	Write('<script src="/socket.io/socket.io.js" type="text/javascript"></script>');
+	Write('<script type="text/javascript">');
+	Write('var socket = io.connect("http://' + req.headers.host + '");');
+	Write('socket.on("progress", function(percentage){');
+	Write('document.getElementById("progressBar").style.width = percentage + "%";});')
+	Write('socket.on("newfile", function(file){');
+	Write('document.getElementById("progressBar").style.width = percentage + "%";});')
+	Write('</script>');
+	Write('</head>');
+	Write('<body>');
+	Write('<div id="container"><div id="buttons">');
+	Write('<form action="/upload" enctype="multipart/form-data" method="post">');
+	Write('<div class="file-upload"><span>Upload file(s)</span><input type="file" name="file" id="file" onchange="this.form.submit()" multiple="multiple" /></div>');
+	Write('</form>');
+	Write('<div class="file-upload"><span>Create Folder</span></div></div>')
+	Write('<div id="content"><div id="progress"><div id="progressBar"></div></div>');
 
 		filenames = fs.readdirSync(fileDir);
 		for (i = 0; i < filenames.length; i++) {
 			var size = BytesToSI(fs.statSync(fileDir + unescape(filenames[i])).size);
 			var href = fileDir + unescape(filenames[i]) + '">' + filenames[i];
-			res.write('<div id="filerow">');
-			res.write('<span id="fileicon">&#x25B6;</span>');
-			res.write('<span id="filename"> <a id="expander" href="' + href + '</a></span>');
-			res.write('<span id="filesize">' + size + '</span>');
-			res.write('<span id="filedelete">' +'<a href="deletefile/' + i + '/">&#x2716;</a>' + '</span>');
-			res.write('<div id=right></div></div>');
+			Write('<div class="filerow">');
+			Write('<span class="fileicon">&#x25B6;</span>');
+			Write('<span class="filename"> <a class="expander" href="' + href + '</a></span>');
+			Write('<span class="filesize">' + size + '</span>');
+			Write('<span class="filedelete">' +'<a href="deletefile/' + i + '/">&#x2716;</a>' + '</span>');
+			Write('<div class=right></div></div>');
 		}
-		res.write('</div></div>');
-		res.write('<div id="footer"> Created on <a id="foot" href="http://nodejs.org/">node.js</a> by <a id="foot" href="https://github.com/silverwind/">silverwind</a></div>');
+	Write('</div></div>');
+	Write('<footer> Created on <a class="foot" href="http://nodejs.org/">node.js</a> by <a class="foot" href="https://github.com/silverwind/">silverwind</a></footer>');
 	res.end('</body></html>');
 }
 //-----------------------------------------------------------------------------
